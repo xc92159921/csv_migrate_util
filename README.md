@@ -13,6 +13,10 @@ go install github.com/xc92159921/csv_migrate_util@latest
 ## Использование
 
 1. Положите CSV-файлы в отдельную папку (например, `./csv_source`).
+   Имя каждого файла должно быть в формате `<N>.<TABLE_NAME>.csv`,
+   где `<N>` — положительное целое число без ведущих нулей
+   (например, `1.blogs.csv`, `2.users.csv`, `10.posts.csv`).
+   Имена без числового префикса или с дублирующимся `<N>` — ошибка.
 2. Создайте `csv_migrate_config.json` в корне проекта:
 
    ```json
@@ -37,7 +41,9 @@ go install github.com/xc92159921/csv_migrate_util@latest
 
    Утилита:
    - удалит из папки `sql` все ранее сгенерированные `*_CSV.sql`;
-   - для каждого `*.csv` из папки `csv` создаст файл `<YYYYMMDDHHMMSS><N>_<NAME_UPPER>_CSV.sql` в папке `sql` (где `<N>` — порядковый номер, сбрасывается в `1` на каждом запуске), с шаблоном:
+   - для каждого `<N>.<TABLE_NAME>.csv` из папки `csv` создаст файл
+     `<YYYYMMDDHHMMSS><N>_<NAME_UPPER>_CSV.sql` в папке `sql`
+     (где `<N>` берётся ровно из имени входного CSV), с шаблоном:
 
    ```sql
    DO $$
@@ -55,7 +61,7 @@ go install github.com/xc92159921/csv_migrate_util@latest
 
 ## Пример
 
-`csv_source/blogs.csv`:
+`csv_source/1.blogs.csv`:
 
 ```
 id,title,description
@@ -69,11 +75,11 @@ DO $$
 BEGIN
     BEGIN
         COPY blogs (id,title,description)
-        FROM '/data/blogs.csv'
+        FROM '/data/1.blogs.csv'
         DELIMITER ',' CSV HEADER;
     EXCEPTION
         WHEN undefined_file THEN
-            RAISE NOTICE 'Файл blogs.csv не найден, пропускаем импорт данных.';
+            RAISE NOTICE 'Файл 1.blogs.csv не найден, пропускаем импорт данных.';
     END;
 END $$;
 ```

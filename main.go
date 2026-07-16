@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +18,13 @@ type Config struct {
 	CSV    string `json:"csv"`
 	SQL    string `json:"sql"`
 	Target string `json:"target"`
+}
+
+// csvEntry — распарсенное имя CSV-файла формата `<N>.<TABLE_NAME>.csv`.
+type csvEntry struct {
+	filename string // полное имя файла, например "1.blogs.csv"
+	index    string // N как строка (без ведущих нулей), например "1" или "10"
+	base     string // TABLE_NAME в исходном регистре, например "blogs"
 }
 
 func main() {
@@ -40,36 +48,42 @@ func main() {
 		log.Fatalf("ошибка очистки папки sql: %v", err)
 	}
 
-	csvFiles, err := scanCSVDir(cfg.CSV)
+	rawFiles, err := listCSVDir(cfg.CSV)
 	if err != nil {
 		log.Fatalf("ошибка сканирования папки csv: %v", err)
 	}
 
-	if len(csvFiles) == 0 {
+	if len(rawFiles) == 0 {
 		log.Printf("NOTICE: в папке %s не найдено .csv-файлов, ничего не генерируем", cfg.CSV)
 		return
 	}
 
-	ts := time.Now().Format("20060102150405")
-	for i, csvPath := range csvFiles {
-		filename := filepath.Base(csvPath)
-		base := strings.TrimSuffix(filename, filepath.Ext(filename))
-		table := strings.ToLower(base)
-		basenameUpper := strings.ToUpper(base)
-		// index — порядковый номер файла в текущем запуске, начинается с 1,
-		// без ведущих нулей. Сбрасывается каждый запуск (шаг 1 очищает *_CSV.sql).
-		index := i + 1
+	// Парсим и валидируем имена файлов, собираем в порядке обхода os.ReadDir.
+	entries, err := parseAndValidate(rawFiles)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
 
-		columns, err := readHeader(csvPath)
+	// Проверяем уникальность <N> среди всех файлов.
+	if err := checkUniqueIndexes(entries); err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	ts := time.Now().Format("20060102150405")
+	for _, e := range entries {
+		table := strings.ToLower(e.base)
+		basenameUpper := strings.ToUpper(e.base)
+
+		columns, err := readHeader(filepath.Join(cfg.CSV, e.filename))
 		if err != nil {
-			log.Fatalf("не удалось прочитать заголовок %s: %v", csvPath, err)
+			log.Fatalf("не удалось прочитать заголовок %s: %v", e.filename, err)
 		}
 
-		outPath := buildCopyPath(cfg.Target, filename)
-		outName := fmt.Sprintf("%s%d_%s_CSV.sql", ts, index, basenameUpper)
+		outPath := buildCopyPath(cfg.Target, e.filename)
+		outName := fmt.Sprintf("%s%s_%s_CSV.sql", ts, e.index, basenameUpper)
 		outFile := filepath.Join(cfg.SQL, outName)
 
-		content := renderSQL(table, columns, outPath, filename)
+		content := renderSQL(table, columns, outPath, e.filename)
 		if err := os.WriteFile(outFile, []byte(content), 0o644); err != nil {
 			log.Fatalf("не удалось записать %s: %v", outFile, err)
 		}
@@ -119,7 +133,8 @@ func cleanSQLDir(dir string) error {
 	return nil
 }
 
-func scanCSVDir(dir string) ([]string, error) {
+// listCSVDir возвращает имена .csv-файлов в порядке os.ReadDir (без сортировки).
+func listCSVDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -130,10 +145,80 @@ func scanCSVDir(dir string) ([]string, error) {
 			continue
 		}
 		if strings.EqualFold(filepath.Ext(e.Name()), ".csv") {
-			out = append(out, filepath.Join(dir, e.Name()))
+			out = append(out, e.Name())
 		}
 	}
 	return out, nil
+}
+
+// parseAndValidate парсит имя файла формата `<N>.<TABLE_NAME>.csv`.
+// Возвращает ошибку, если имя не соответствует формату.
+func parseAndValidate(filenames []string) ([]csvEntry, error) {
+	out := make([]csvEntry, 0, len(filenames))
+	for _, name := range filenames {
+		// Требуем строго ".csv" (lowercase) — иначе ошибка.
+		// Но os.ReadDir возвращает имена как есть на диске; разрешим и ".CSV"
+		// для дружелюбности? Спека говорит "строго соответствовать формату".
+		// Трактую строго: расширение только ".csv" в нижнем регистре.
+		// Однако часть "<N>." и сам TABLE_NAME могут быть в любом регистре.
+		if !strings.HasSuffix(name, ".csv") || strings.HasSuffix(name, ".CSV") {
+			return nil, fmt.Errorf("файл %q не соответствует формату <N>.<TABLE_NAME>.csv", name)
+		}
+		stem := strings.TrimSuffix(name, ".csv")
+		// stem не должен содержать дополнительных точек (имя таблицы без точек,
+		// иначе распарсить однозначно нельзя).
+		dot := strings.Index(stem, ".")
+		if dot <= 0 || dot == len(stem)-1 {
+			return nil, fmt.Errorf("файл %q не соответствует формату <N>.<TABLE_NAME>.csv", name)
+		}
+		if strings.Contains(stem[dot+1:], ".") {
+			return nil, fmt.Errorf("файл %q не соответствует формату <N>.<TABLE_NAME>.csv (TABLE_NAME не должен содержать '.')", name)
+		}
+
+		nStr := stem[:dot]
+		base := stem[dot+1:]
+
+		// <N> — положительное целое, без знака, без ведущих нулей.
+		if !isPositiveIntNoLeadingZeros(nStr) {
+			return nil, fmt.Errorf("файл %q не соответствует формату <N>.<TABLE_NAME>.csv: <N>=%q должен быть положительным целым без ведущих нулей", name, nStr)
+		}
+
+		out = append(out, csvEntry{
+			filename: name,
+			index:    nStr,
+			base:     base,
+		})
+	}
+	return out, nil
+}
+
+// isPositiveIntNoLeadingZeros проверяет, что s — положительное целое
+// без знака '+' и без ведущих нулей. "0" и "01" и "001" — отвергаются.
+func isPositiveIntNoLeadingZeros(s string) bool {
+	if s == "" {
+		return false
+	}
+	if len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// checkUniqueIndexes проверяет, что все <N> уникальны.
+// При конфликте — ошибка с указанием конфликтующих имён.
+func checkUniqueIndexes(entries []csvEntry) error {
+	seen := make(map[string]string, len(entries)) // index -> первое имя с таким index
+	for _, e := range entries {
+		if first, ok := seen[e.index]; ok {
+			return fmt.Errorf("обнаружены файлы с одинаковым <N>=%s: %q и %q", e.index, first, e.filename)
+		}
+		seen[e.index] = e.filename
+	}
+	return nil
 }
 
 func readHeader(path string) (string, error) {
