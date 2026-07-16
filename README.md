@@ -37,7 +37,7 @@ go install github.com/xc92159921/csv_migrate_util@latest
 
    Утилита:
    - удалит из папки `sql` все ранее сгенерированные `*_CSV.sql`;
-   - для каждого `*.csv` из папки `csv` создаст файл `<TIMESTAMP>_<NAME_UPPER>_CSV.sql` в папке `sql` с шаблоном:
+   - для каждого `*.csv` из папки `csv` создаст файл `<YYYYMMDDHHMMSS><N>_<NAME_UPPER>_CSV.sql` в папке `sql` (где `<N>` — порядковый номер, сбрасывается в `1` на каждом запуске), с шаблоном:
 
    ```sql
    DO $$
@@ -62,7 +62,7 @@ id,title,description
 1,Hello,World
 ```
 
-`sql_target/20260101120000_BLOGS_CSV.sql`:
+`sql_target/202601011200001_BLOGS_CSV.sql`:
 
 ```sql
 DO $$

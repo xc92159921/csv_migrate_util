@@ -51,11 +51,14 @@ func main() {
 	}
 
 	ts := time.Now().Format("20060102150405")
-	for _, csvPath := range csvFiles {
+	for i, csvPath := range csvFiles {
 		filename := filepath.Base(csvPath)
 		base := strings.TrimSuffix(filename, filepath.Ext(filename))
 		table := strings.ToLower(base)
 		basenameUpper := strings.ToUpper(base)
+		// index — порядковый номер файла в текущем запуске, начинается с 1,
+		// без ведущих нулей. Сбрасывается каждый запуск (шаг 1 очищает *_CSV.sql).
+		index := i + 1
 
 		columns, err := readHeader(csvPath)
 		if err != nil {
@@ -63,7 +66,7 @@ func main() {
 		}
 
 		outPath := buildCopyPath(cfg.Target, filename)
-		outName := fmt.Sprintf("%s_%s_CSV.sql", ts, basenameUpper)
+		outName := fmt.Sprintf("%s%d_%s_CSV.sql", ts, index, basenameUpper)
 		outFile := filepath.Join(cfg.SQL, outName)
 
 		content := renderSQL(table, columns, outPath, filename)
