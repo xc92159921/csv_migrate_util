@@ -16,6 +16,7 @@ import (
 )
 
 var tempTable bool
+var upsert bool
 
 // rootCmd — единственная команда утилиты. Вся логика собрана здесь,
 // потому что операция одна — сгенерировать SQL-файлы из CSV.
@@ -29,6 +30,8 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.Flags().BoolVarP(&tempTable, "temp-table", "t", false,
 		"Сгенерировать SQL в режиме temp_table (импорт через временную таблицу + UPSERT по PK/UNIQUE)")
+	rootCmd.Flags().BoolVarP(&upsert, "upsert", "u", false,
+		"Сгенерировать SQL в режиме upsert (импорт через временную таблицу + UPSERT по колонке id)")
 }
 
 // Execute — точка входа, вызывается из main.
@@ -39,6 +42,10 @@ func Execute() {
 }
 
 func run(cmd *cobra.Command, args []string) error {
+	if tempTable && upsert {
+		return fmt.Errorf("флаги --temp-table и --upsert взаимоисключающие, укажите только один из них")
+	}
+
 	cfg, err := config.LoadOrCreate(configFileName())
 	if err != nil {
 		return fmt.Errorf("ошибка загрузки конфигурации: %w", err)
@@ -94,9 +101,12 @@ func run(cmd *cobra.Command, args []string) error {
 		outFile := filepath.Join(cfg.SQL, outName)
 
 		var content string
-		if tempTable {
+		switch {
+		case upsert:
+			content = render.UpsertSQL(table, columns, outPath)
+		case tempTable:
 			content = render.TempTableSQL(table, columns, outPath, e.Filename)
-		} else {
+		default:
 			content = render.NormalSQL(table, columns, outPath, e.Filename)
 		}
 

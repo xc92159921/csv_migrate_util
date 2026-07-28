@@ -7,7 +7,12 @@
 из корня проекта, где лежит `csv_migrate_config.json`.
 
 Использует [spf13/cobra](https://github.com/spf13/cobra) для CLI
-(один root-команда + флаги).
+(один root-команда + флаги) и [CloudyKit/jet](https://github.com/CloudyKit/jet)
+для рендера SQL-шаблонов из `templates/`. Шаблоны встраиваются в
+бинарь через `embed.FS` (`//go:embed templates/*.jet` + `jet.SetFS`),
+при этом папка `templates/` лежит в репозитории — для удобства
+редактирования и отладки (правки в `templates/` сразу попадают
+в бинарь при следующей сборке).
 
 ## Структура проекта
 
@@ -20,6 +25,9 @@
 ├── main.go                  # точка входа, инициализация cobra
 ├── cmd/                     # команды cobra (root, generate, ...)
 ├── internal/                # логика (config, csv, sql, render)
+├── templates/               # SQL-шаблоны для Jet (встраиваются в бинарь)
+│   ├── copy.sql.jet         # обычный режим (Шаг 3a)
+│   └── temp_table.sql.jet   # режим --temp-table (Шаг 3b)
 ├── csv_migrate_config.json  # создаётся автоматически при первом запуске
 ├── csv_source/              # источник CSV (по умолчанию)
 └── sql_target/              # куда класть сгенерированные .sql (по умолчанию)
@@ -28,6 +36,28 @@
 (Структура `cmd/` и `internal/` — рекомендуемая для cobra-проекта,
 конкретная разбивка по файлам — на усмотрение реализации.)
 
+### Встраивание шаблонов
+
+Шаблоны из `templates/` попадают в бинарь через стандартный механизм
+`embed` Go. Ожидаемый паттерн (детали реализации — на усмотрение):
+
+```go
+//go:embed templates/*.jet
+var templatesFS embed.FS
+
+func init() {
+    jet.SetFS(templatesFS) // глобальный FS для Jet
+}
+```
+
+При таком подходе:
+- папка `templates/` нужна в репозитории только для удобства
+  редактирования — в runtime она читается из бинаря;
+- правки в `templates/` сразу попадают в бинарь при следующей сборке
+  (`go build` / `go install`);
+- при запуске утилите **не нужна** папка `templates/` рядом —
+  всё тянется из встроенного FS.
+
 ## CLI
 
 Одна корневая команда `csv_migrate_util` (cobra) с флагами:
@@ -35,6 +65,10 @@
 | Флаг           | Сокращение | По умолчанию | Описание                                        |
 |----------------|------------|--------------|-------------------------------------------------|
 | `--temp-table` | `-t`       | `false`      | Сгенерировать SQL в режиме `temp_table` (см. ниже). |
+| `--upsert`     | `-u`       | `false`      | Сгенерировать SQL в режиме `upsert` (см. ниже). |
+
+Флаги `--temp-table` и `--upsert` **взаимоисключающие**: при указании
+обоих утилита завершается с ошибкой и ненулевым кодом.
 
 Примеры:
 
@@ -42,9 +76,13 @@
 # обычный режим — прямая COPY в целевую таблицу
 csv_migrate_util
 
-# режим temp_table — импорт через временную таблицу + UPSERT по PK/UNIQUE
+# режим temp_table — импорт через временную таблицу + UPSERT по PK/UNIQUE целевой таблицы
 csv_migrate_util --temp-table
 csv_migrate_util -t
+
+# режим upsert — импорт через временную таблицу + UPSERT по колонке id (id должен быть в CSV и в целевой таблице)
+csv_migrate_util --upsert
+csv_migrate_util -u
 ```
 
 ## Конфигурация `csv_migrate_config.json`
@@ -146,8 +184,16 @@ csv_migrate_util -t
 ### Шаг 3. Запись `.sql`-файла
 
 Содержимое файла зависит от режима (флаг `--temp-table`).
+Шаблоны лежат в `templates/` (см. секцию «Структура проекта»):
+
+- `templates/copy.sql.jet` — обычный режим;
+- `templates/temp_table.sql.jet` — режим `--temp-table`.
 
 #### Шаг 3a. Обычный режим (без `--temp-table`)
+
+Файл `templates/copy.sql.jet` рендерится с переменными
+`{{table}}`, `{{columns}}`, `{{path}}`, `{{filename}}`
+и даёт на выходе:
 
 ```sql
 DO $$
@@ -179,6 +225,10 @@ END $$;
 колонками типа `TEXT`), затем строится `INSERT ... ON CONFLICT`
 по `PRIMARY KEY` (приоритет) или `UNIQUE`-индексу целевой таблицы,
 либо простой `INSERT` если уникальных ключей нет.
+
+Файл `templates/temp_table.sql.jet` рендерится с переменными
+`{{table}}`, `{{columns}}`, `{{path}}` (`filename` не используется —
+в NOTICE подставляется `csv_path`) и даёт на выходе:
 
 ```sql
 DO $$
@@ -272,6 +322,114 @@ END $$;
 на шаге 3 (импорт CSV). При срабатывании — `RAISE NOTICE` + `RETURN`
 (выход из `DO`-блока), UPSERT не выполняется. Это отличается от
 обычного режима, где EXCEPTION оборачивает весь `COPY`.
+
+#### Шаг 3c. Режим `upsert` (с `--upsert`)
+
+Импорт идёт через временную таблицу `temp_csv_import` (создаётся с
+колонками типа `TEXT`), затем строится `INSERT ... ON CONFLICT (id)
+DO UPDATE` — жёстко по колонке `id`. По условиям эксплуатации
+колонка `id` всегда присутствует в CSV и всегда уникальна в
+целевой таблице (проверки этого на уровне утилиты нет — это
+ответственность пользователя, как и наличие колонки `id` в самой
+целевой таблице в БД).
+
+Содержимое генерируется функцией `render.UpsertSQL(table, columns, copyPath)`
+и имеет следующий вид:
+
+```sql
+DO $$
+DECLARE
+    -- === ЭТИ ТРИ ПЕРЕМЕННЫЕ ПОДСТАВЛЯЕТ ГЕНЕРАТОР ===
+    target_tbl  TEXT := '<table>';                       -- Имя таблицы
+    columns_lst TEXT := '<columns>';                     -- Колонки из CSV через запятую
+    csv_path    TEXT := '<path>';                        -- Путь к CSV-файлу
+    -- =================================================
+
+    conflict_cols   CONSTANT TEXT := 'id';
+    update_set      TEXT;
+    final_sql       TEXT;
+BEGIN
+    -- 1. Создаем временную таблицу, где все типы TEXT
+    EXECUTE format('CREATE TEMP TABLE temp_csv_import (%s) ON COMMIT DROP',
+        (SELECT string_agg(format('%I TEXT', trim(col)), ', ')
+         FROM unnest(string_to_array(columns_lst, ',')) AS col));
+
+    -- 2. Безопасно импортируем CSV-данные во временную таблицу
+    BEGIN
+        EXECUTE format('
+            COPY temp_csv_import (%s)
+            FROM %L
+            DELIMITER '','' CSV HEADER',
+            columns_lst, csv_path
+        );
+    EXCEPTION
+        WHEN undefined_file THEN
+            RAISE NOTICE 'Файл % не найден, пропускаем импорт.', csv_path;
+            RETURN;
+    END;
+
+    -- 3. Строим SET-часть: обновляем все колонки кроме id
+    SELECT string_agg(format('%1$I = EXCLUDED.%1$I', trim(col)), ', ')
+    INTO update_set
+    FROM unnest(string_to_array(columns_lst, ',')) AS col
+    WHERE trim(col) <> conflict_cols;
+
+    IF update_set IS NULL OR update_set = '' THEN
+        -- Если в CSV только колонка id — ничего обновлять нечего, просто пропускаем дубли
+        final_sql := format('
+            INSERT INTO %1$I (%2$s)
+            SELECT %2$s FROM temp_csv_import
+            ON CONFLICT (%3$s) DO NOTHING',
+            target_tbl, columns_lst, conflict_cols
+        );
+    ELSE
+        final_sql := format('
+            INSERT INTO %1$I (%2$s)
+            SELECT %2$s FROM temp_csv_import
+            ON CONFLICT (%3$s)
+            DO UPDATE SET %4$s',
+            target_tbl, columns_lst, conflict_cols, update_set
+        );
+    END IF;
+
+    EXECUTE final_sql;
+
+    RAISE NOTICE 'Импорт в таблицу % успешно выполнен (UPSERT по id).', target_tbl;
+END $$;
+```
+
+**Особенности режима `upsert`:**
+
+- `conflict_cols` **жёстко зафиксирован** как строка `'id'` — никаких
+  обращений к `pg_index` / `pg_attribute` не происходит, ключ для
+  `ON CONFLICT` известен заранее из требования задачи.
+- `update_set` строится динамически по списку колонок CSV: обновляются
+  все колонки, кроме `id` (через `WHERE trim(col) <> conflict_cols`).
+- Если в CSV **только** колонка `id` — `update_set` пустой, и финальный
+  SQL вырождается в `INSERT ... ON CONFLICT (id) DO NOTHING` (дубли
+  молча пропускаются).
+- Поведение `EXCEPTION WHEN undefined_file` на шаге 2 аналогично
+  `temp_table`-режиму: `RAISE NOTICE` + `RETURN` из DO-блока, UPSERT
+  не выполняется.
+- Как и `temp_table`-режим, рассчитан на PostgreSQL (использует
+  `TEMP TABLE`, `ON CONFLICT`, `EXCEPTION WHEN undefined_file`).
+
+### Эталонный пример (режим `upsert`)
+
+Вход: `csv_source/7.promocodes.csv`:
+
+```
+promocode,discount,discount_type
+SUMMER10,10,percent
+WINTER20,20,percent
+```
+
+Команда: `csv_migrate_util --upsert`
+
+Выход: `sql_target/202607282323497_PROMOCODES_CSV.sql` — содержимое
+совпадает с шаблоном выше, где `<table>='promocodes'`,
+`<columns>='promocode,discount,discount_type'`,
+`<path>='/data/7.promocodes.csv'`.
 
 ## Эталонный пример (обычный режим)
 
@@ -402,6 +560,16 @@ BEGIN
     RAISE NOTICE 'Импорт в таблицу % успешно выполнен (UPSERT).', target_tbl;
 END $$;
 ```
+
+## Зависимости (go.mod)
+
+- `github.com/spf13/cobra` — CLI.
+- `github.com/cloudykit/jet/v6` — рендер SQL-шаблонов.
+
+Стандартные пакеты Go, без сторонних обёрток: `embed` (встраивание
+`templates/` в бинарь), `encoding/json` (конфиг), `os`/`path/filepath`
+(обход папок, очистка), `strings` (парсинг заголовка CSV),
+`strconv` (парсинг `<N>`), `time` (timestamp в имени файла).
 
 ## Ограничения и допущения
 
