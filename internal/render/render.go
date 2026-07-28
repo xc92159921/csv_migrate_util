@@ -1,6 +1,9 @@
 package render
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // NormalSQL рендерит SQL в обычном режиме (прямая COPY).
 //
@@ -120,67 +123,63 @@ END $$;
 // UPSERT по колонке id). По условиям эксплуатации колонка id всегда
 // присутствует в CSV и всегда уникальна в целевой таблице.
 //
+// Шаблон максимально простой: temp-таблица → COPY → INSERT ... ON CONFLICT.
+// Никакой динамики внутри SQL — Go-генератор заранее знает список колонок и
+// подставляет готовые куски в плейсхолдеры %s. Колонка конфликта захардкожена
+// как 'id' (как требует задача). В SET-часть попадают все колонки CSV кроме 'id'.
+//
 // Формат фиксированный по agents.md — отступы и пустые строки как в эталоне.
 func UpsertSQL(table, columns, copyPath string) string {
+	// Разбираем список колонок CSV, чтобы сформировать готовые куски SQL.
+	cols := strings.Split(columns, ",")
+	tblFields := make([]string, 0, len(cols)) // для CREATE TEMP TABLE: "id" TEXT, "url" TEXT, ...
+	copyCols := make([]string, 0, len(cols))  // для COPY/INSERT: "id", "url", ...
+	setCols := make([]string, 0, len(cols))   // для SET: "url" = EXCLUDED."url", ...
+	for _, c := range cols {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		tblFields = append(tblFields, fmt.Sprintf(`%q TEXT`, c))
+		copyCols = append(copyCols, fmt.Sprintf(`%q`, c))
+		if c != "id" {
+			setCols = append(setCols, fmt.Sprintf(`%q = EXCLUDED.%q`, c, c))
+		}
+	}
+	tblFieldsSQL := strings.Join(tblFields, ", ")
+	copyColsSQL := strings.Join(copyCols, ", ")
+	setColsSQL := strings.Join(setCols, ", ")
+
 	return fmt.Sprintf(`DO $$
 DECLARE
-    -- === ЭТИ ТРИ ПЕРЕМЕННЫЕ ПОДСТАВЛЯЕТ ГЕНЕРАТОР ===
-    target_tbl  TEXT := '%s';                       -- Имя таблицы
-    columns_lst TEXT := '%s';                     -- Колонки из CSV через запятую
-    csv_path    TEXT := '%s';                        -- Путь к CSV-файлу
-    -- =================================================
-
-    conflict_cols   CONSTANT TEXT := 'id';
-    update_set      TEXT;
-    final_sql       TEXT;
+    target_tbl  TEXT := '%s';
+    columns_lst TEXT := '%s';
+    csv_path    TEXT := '%s';
 BEGIN
-    -- 1. Создаем временную таблицу, где все типы TEXT
-    EXECUTE format('CREATE TEMP TABLE temp_csv_import (%%s) ON COMMIT DROP',
-        (SELECT string_agg(format('%%I TEXT', trim(col)), ', ')
-         FROM unnest(string_to_array(columns_lst, ',')) AS col));
+    -- 1. Создаём временную таблицу, все колонки TEXT
+    EXECUTE 'CREATE TEMP TABLE temp_csv_import (%s) ON COMMIT DROP';
 
-    -- 2. Безопасно импортируем CSV-данные во временную таблицу
+    -- 2. Импортируем CSV
     BEGIN
-        EXECUTE format('
-            COPY temp_csv_import (%%s)
-            FROM %%L
-            DELIMITER '','' CSV HEADER',
-            columns_lst, csv_path
-        );
+        EXECUTE 'COPY temp_csv_import (%s) FROM ' || quote_literal(csv_path) || ' DELIMITER '','' CSV HEADER';
     EXCEPTION
         WHEN undefined_file THEN
             RAISE NOTICE 'Файл %% не найден, пропускаем импорт.', csv_path;
             RETURN;
     END;
 
-    -- 3. Строим SET-часть: обновляем все колонки кроме id
-    SELECT string_agg(format('%%1$I = EXCLUDED.%%1$I', trim(col)), ', ')
-    INTO update_set
-    FROM unnest(string_to_array(columns_lst, ',')) AS col
-    WHERE trim(col) <> conflict_cols;
-
-    IF update_set IS NULL OR update_set = '' THEN
-        -- Если в CSV только колонка id — ничего обновлять нечего, просто пропускаем дубли
-        final_sql := format('
-            INSERT INTO %%1$I (%%2$s)
-            SELECT %%2$s FROM temp_csv_import
-            ON CONFLICT (%%3$s) DO NOTHING',
-            target_tbl, columns_lst, conflict_cols
-        );
-    ELSE
-        final_sql := format('
-            INSERT INTO %%1$I (%%2$s)
-            SELECT %%2$s FROM temp_csv_import
-            ON CONFLICT (%%3$s)
-            DO UPDATE SET %%4$s',
-            target_tbl, columns_lst, conflict_cols, update_set
-        );
-    END IF;
-
-    EXECUTE final_sql;
+    -- 3. UPSERT по id
+    EXECUTE 'INSERT INTO ' || quote_ident(target_tbl) || ' (%s)
+            SELECT %s FROM temp_csv_import
+            ON CONFLICT (id) DO UPDATE SET %s';
 
     RAISE NOTICE 'Импорт в таблицу %% успешно выполнен (UPSERT по id).', target_tbl;
 END $$;
-`, table, columns, copyPath)
+`,
+		table, columns, copyPath,
+		tblFieldsSQL,
+		copyColsSQL,
+		copyColsSQL, copyColsSQL, setColsSQL,
+	)
 }
 
