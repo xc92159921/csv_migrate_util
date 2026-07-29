@@ -75,6 +75,45 @@ func ReadHeader(path string) (string, error) {
 	return strings.Join(parts, ","), nil
 }
 
+// ReadDataRows читает все строки данных CSV (без заголовка) и возвращает
+// их в виде слайса слайсов значений колонок. Пустые строки пропускаются.
+// Наивный сплит по ',' — без поддержки quoted-полей и переносов внутри
+// ячеек (контракт проекта: заголовки и данные CSV «чистые»).
+func ReadDataRows(path string) ([][]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	// увеличим буфер на случай длинных строк данных
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+
+	var rows [][]string
+	first := true
+	for scanner.Scan() {
+		line := scanner.Text()
+		if first {
+			// пропускаем заголовок
+			first = false
+			continue
+		}
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ",")
+		for i, p := range parts {
+			parts[i] = strings.TrimSpace(p)
+		}
+		rows = append(rows, parts)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // BuildCopyPath склеивает target и filename через один '/'. Если target
 // пуст — возвращается просто filename.
 func BuildCopyPath(target, filename string) string {

@@ -44,6 +44,14 @@ go install github.com/xc92159921/csv_migrate_util@latest
    csv_migrate_util --temp-table
    # или короткий алиас
    csv_migrate_util -t
+
+   # режим upsert — импорт через временную таблицу с UPSERT по колонке id
+   csv_migrate_util --upsert
+   csv_migrate_util -u
+
+   # режим copy — данные CSV встраиваются в SQL (без COPY): INSERT ... ON CONFLICT (id) DO UPDATE
+   csv_migrate_util --copy
+   csv_migrate_util -c
    ```
 
    Имя sql-файла в обоих режимах одинаковое:
@@ -157,3 +165,25 @@ END $$;
 ```
 
 Подробности и эталонный пример см. в [agents.md](./agents.md).
+
+## Пример (режим `copy`)
+
+`csv_source/10.users.csv`:
+
+```
+id,email,name
+1,alice@example.com,Alice
+2,bob@example.com,Bob
+```
+
+`sql_target/<ts>10_USERS_CSV.sql`:
+
+```sql
+-- Сгенерировано csv_migrate_util --copy для таблицы users
+INSERT INTO users (id,email,name) VALUES
+    ('1', 'alice@example.com', 'Alice'),
+    ('2', 'bob@example.com', 'Bob')
+ON CONFLICT (id) DO UPDATE SET
+    email = EXCLUDED.email,
+    name  = EXCLUDED.name;
+```

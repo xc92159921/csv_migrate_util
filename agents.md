@@ -3,7 +3,7 @@
 ## Назначение
 
 Утилита на Go для генерации SQL-миграций из CSV-файлов. Устанавливается
-через `go install github.com/xc92159921/csv_migrate_util` и запускается
+через `go install github.com/xc92159921/csv_migrate_util@latest` и запускается
 из корня проекта, где лежит `csv_migrate_config.json`.
 
 Использует [spf13/cobra](https://github.com/spf13/cobra) для CLI
@@ -51,6 +51,7 @@ func init() {
 ```
 
 При таком подходе:
+
 - папка `templates/` нужна в репозитории только для удобства
   редактирования — в runtime она читается из бинаря;
 - правки в `templates/` сразу попадают в бинарь при следующей сборке
@@ -62,10 +63,10 @@ func init() {
 
 Одна корневая команда `csv_migrate_util` (cobra) с флагами:
 
-| Флаг           | Сокращение | По умолчанию | Описание                                        |
-|----------------|------------|--------------|-------------------------------------------------|
+| Флаг           | Сокращение | По умолчанию | Описание                                            |
+| -------------- | ---------- | ------------ | --------------------------------------------------- |
 | `--temp-table` | `-t`       | `false`      | Сгенерировать SQL в режиме `temp_table` (см. ниже). |
-| `--upsert`     | `-u`       | `false`      | Сгенерировать SQL в режиме `upsert` (см. ниже). |
+| `--upsert`     | `-u`       | `false`      | Сгенерировать SQL в режиме `upsert` (см. ниже).     |
 
 Флаги `--temp-table` и `--upsert` **взаимоисключающие**: при указании
 обоих утилита завершается с ошибкой и ненулевым кодом.
@@ -89,19 +90,19 @@ csv_migrate_util -u
 
 Три поля:
 
-| Поле      | Тип    | Обязательно | Описание                                      |
-|-----------|--------|-------------|-----------------------------------------------|
-| `csv`     | string | да          | Папка с исходными `.csv` (относительный путь) |
-| `sql`     | string | да          | Папка для сгенерированных `.sql` (относительный) |
-| `target`  | string | нет         | Префикс пути в `COPY ... FROM` (например, `/data` для Docker-монтирования). Может быть пустым — тогда путь в `COPY` будет просто именем файла. |
+| Поле     | Тип    | Обязательно | Описание                                                                                                                                       |
+| -------- | ------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `csv`    | string | да          | Папка с исходными `.csv` (относительный путь)                                                                                                  |
+| `sql`    | string | да          | Папка для сгенерированных `.sql` (относительный)                                                                                               |
+| `target` | string | нет         | Префикс пути в `COPY ... FROM` (например, `/data` для Docker-монтирования). Может быть пустым — тогда путь в `COPY` будет просто именем файла. |
 
 Дефолтный конфиг (создаётся утилитой при первом запуске):
 
 ```json
 {
-    "csv": "",
-    "sql": "",
-    "target": ""
+  "csv": "",
+  "sql": "",
+  "target": ""
 }
 ```
 
@@ -201,9 +202,9 @@ BEGIN
 
     BEGIN
         COPY <table> (<columns>)
-        FROM '<path>' 
+        FROM '<path>'
         DELIMITER ',' CSV HEADER;
-    EXCEPTION 
+    EXCEPTION
         WHEN undefined_file THEN
             RAISE NOTICE 'Файл <filename> не найден, пропускаем импорт данных.';
     END;
@@ -256,11 +257,11 @@ BEGIN
     BEGIN
         EXECUTE format('
             COPY temp_csv_import (%s)
-            FROM %L 
-            DELIMITER '','' CSV HEADER', 
+            FROM %L
+            DELIMITER '','' CSV HEADER',
             columns_lst, csv_path
         );
-    EXCEPTION 
+    EXCEPTION
         WHEN undefined_file THEN
             RAISE NOTICE 'Файл % не найден, пропускаем импорт.', csv_path;
             RETURN;
@@ -271,7 +272,7 @@ BEGIN
     INTO conflict_cols
     FROM pg_index i
     JOIN pg_attribute att ON att.attrelid = i.indrelid AND att.attnum = ANY(i.indkey)
-    WHERE i.indrelid = target_tbl::regclass 
+    WHERE i.indrelid = target_tbl::regclass
       AND i.indisunique
     GROUP BY i.indexrelid, i.indisprimary
     ORDER BY i.indisprimary DESC
@@ -297,7 +298,7 @@ BEGIN
             final_sql := format('
                 INSERT INTO %1$I (%2$s)
                 SELECT %2$s FROM temp_csv_import
-                ON CONFLICT (%3$s) 
+                ON CONFLICT (%3$s)
                 DO UPDATE SET %4$s',
                 target_tbl, columns_lst, conflict_cols, update_set
             );
@@ -448,9 +449,9 @@ BEGIN
 
     BEGIN
         COPY blogs (id,title,description,preview,preview_small,show_on_main,url,article,views,user_blogs)
-        FROM '/data/1.blogs.csv' 
+        FROM '/data/1.blogs.csv'
         DELIMITER ',' CSV HEADER;
-    EXCEPTION 
+    EXCEPTION
         WHEN undefined_file THEN
             RAISE NOTICE 'Файл 1.blogs.csv не найден, пропускаем импорт данных.';
     END;
@@ -499,11 +500,11 @@ BEGIN
     BEGIN
         EXECUTE format('
             COPY temp_csv_import (%s)
-            FROM %L 
-            DELIMITER '','' CSV HEADER', 
+            FROM %L
+            DELIMITER '','' CSV HEADER',
             columns_lst, csv_path
         );
-    EXCEPTION 
+    EXCEPTION
         WHEN undefined_file THEN
             RAISE NOTICE 'Файл % не найден, пропускаем импорт.', csv_path;
             RETURN;
@@ -514,7 +515,7 @@ BEGIN
     INTO conflict_cols
     FROM pg_index i
     JOIN pg_attribute att ON att.attrelid = i.indrelid AND att.attnum = ANY(i.indkey)
-    WHERE i.indrelid = target_tbl::regclass 
+    WHERE i.indrelid = target_tbl::regclass
       AND i.indisunique
     GROUP BY i.indexrelid, i.indisprimary
     ORDER BY i.indisprimary DESC
@@ -540,7 +541,7 @@ BEGIN
             final_sql := format('
                 INSERT INTO %1$I (%2$s)
                 SELECT %2$s FROM temp_csv_import
-                ON CONFLICT (%3$s) 
+                ON CONFLICT (%3$s)
                 DO UPDATE SET %4$s',
                 target_tbl, columns_lst, conflict_cols, update_set
             );
