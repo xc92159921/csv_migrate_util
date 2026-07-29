@@ -79,7 +79,15 @@ func ReadHeader(path string) (string, error) {
 // их в виде слайса слайсов значений колонок. Пустые строки пропускаются.
 // Наивный сплит по ',' — без поддержки quoted-полей и переносов внутри
 // ячеек (контракт проекта: заголовки и данные CSV «чистые»).
-func ReadDataRows(path string) ([][]string, error) {
+//
+// expectedCols — ожидаемое количество колонок в каждой строке данных
+// (берётся из заголовка). Если в какой-то строке число значений
+// отличается от expectedCols — возвращается ошибка с указанием имени
+// файла, номера строки и фактического/ожидаемого количества колонок.
+// Это защита от генерации битого SQL в режиме --copy: «INSERT has more
+// target columns than expressions» / «INSERT has more expressions than
+// target columns».
+func ReadDataRows(path string, expectedCols int) ([][]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -91,8 +99,10 @@ func ReadDataRows(path string) ([][]string, error) {
 	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 
 	var rows [][]string
+	lineNo := 0 // 1-based номер строки в файле (включая заголовок)
 	first := true
 	for scanner.Scan() {
+		lineNo++
 		line := scanner.Text()
 		if first {
 			// пропускаем заголовок
@@ -105,6 +115,9 @@ func ReadDataRows(path string) ([][]string, error) {
 		parts := strings.Split(line, ",")
 		for i, p := range parts {
 			parts[i] = strings.TrimSpace(p)
+		}
+		if len(parts) != expectedCols {
+			return nil, fmt.Errorf("файл %s: строка %d содержит %d колонок, ожидалось %d (по заголовку)", path, lineNo, len(parts), expectedCols)
 		}
 		rows = append(rows, parts)
 	}

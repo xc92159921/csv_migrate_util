@@ -128,7 +128,7 @@ func run(cmd *cobra.Command, args []string) error {
 				if !hasID {
 					return fmt.Errorf("файл %s: режим --copy требует колонку `id` в заголовке CSV", e.Filename)
 				}
-				rows, err := iofs.ReadDataRows(filepath.Join(cfg.CSV, e.Filename))
+				rows, err := iofs.ReadDataRows(filepath.Join(cfg.CSV, e.Filename), len(strings.Split(columns, ",")))
 				if err != nil {
 					return fmt.Errorf("не удалось прочитать данные %s: %w", e.Filename, err)
 				}
