@@ -56,7 +56,7 @@ func run(cmd *cobra.Command, args []string) error {
 		modes++
 	}
 	if modes > 1 {
-		return fmt.Errorf("флаги --temp-table, --upsert и --copy взаимоисключающие, укажите только один из них")
+		return fmt.Errorf("флаги --temp-table, --upsert и --copy взаимно исключающие, укажите только один из них")
 	}
 
 	cfg, err := config.LoadOrCreate(configFileName())
@@ -99,47 +99,47 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 		// Шаг 3. Запись .sql-файлов.
-		ts := time.Now().Format("20060102150405")
-		for _, e := range entries {
-			table := strings.ToLower(e.Base)
-			basenameUpper := strings.ToUpper(e.Base)
+	ts := time.Now().Format("20060102150405")
+	for _, e := range entries {
+		table := strings.ToLower(e.Base)
+		basenameUpper := strings.ToUpper(e.Base)
 
-			columns, err := iofs.ReadHeader(filepath.Join(cfg.CSV, e.Filename))
+		// Считываем заголовок CSV (с поддержкой кавычек)
+		columns, err := iofs.ReadHeader(filepath.Join(cfg.CSV, e.Filename))
+		if err != nil {
+			return fmt.Errorf("не удалось прочитать заголовок %s: %w", e.Filename, err)
+		}
+
+		outPath := iofs.BuildCopyPath(cfg.Target, e.Filename)
+		outName := fmt.Sprintf("%s%s_%s_CSV.sql", ts, e.Index, basenameUpper)
+		outFile := filepath.Join(cfg.SQL, outName)
+
+		var content string
+		switch {
+		case copyInline:
+			// В режиме --copy колонка id обязательна — это ключ UPSERT.
+			hasID := false
+			for _, c := range columns {
+				if strings.TrimSpace(c) == "id" {
+					hasID = true
+					break
+				}
+			}
+			if !hasID {
+				return fmt.Errorf("файл %s: режим --copy требует колонку `id` в заголовке CSV", e.Filename)
+			}
+			rows, err := iofs.ReadDataRows(filepath.Join(cfg.CSV, e.Filename), len(columns))
 			if err != nil {
-				return fmt.Errorf("не удалось прочитать заголовок %s: %w", e.Filename, err)
+				return fmt.Errorf("не удалось прочитать данные %s: %w", e.Filename, err)
 			}
-
-			outPath := iofs.BuildCopyPath(cfg.Target, e.Filename)
-			outName := fmt.Sprintf("%s%s_%s_CSV.sql", ts, e.Index, basenameUpper)
-			outFile := filepath.Join(cfg.SQL, outName)
-
-			var content string
-			switch {
-			case copyInline:
-				// В режиме --copy колонка id обязательна — это ключ UPSERT.
-				colsList := strings.Split(columns, ",")
-				hasID := false
-				for _, c := range colsList {
-					if strings.TrimSpace(c) == "id" {
-						hasID = true
-						break
-					}
-				}
-				if !hasID {
-					return fmt.Errorf("файл %s: режим --copy требует колонку `id` в заголовке CSV", e.Filename)
-				}
-				rows, err := iofs.ReadDataRows(filepath.Join(cfg.CSV, e.Filename), len(strings.Split(columns, ",")))
-				if err != nil {
-					return fmt.Errorf("не удалось прочитать данные %s: %w", e.Filename, err)
-				}
-				content = render.CopyInlineSQL(table, columns, rows)
-			case upsert:
-				content = render.UpsertSQL(table, columns, outPath)
-			case tempTable:
-				content = render.TempTableSQL(table, columns, outPath, e.Filename)
-			default:
-				content = render.NormalSQL(table, columns, outPath, e.Filename)
-			}
+			content = render.CopyInlineSQL(table, strings.Join(columns, ","), rows)
+		case upsert:
+			content = render.UpsertSQL(table, strings.Join(columns, ","), outPath)
+		case tempTable:
+			content = render.TempTableSQL(table, strings.Join(columns, ","), outPath, e.Filename)
+		default:
+			content = render.NormalSQL(table, strings.Join(columns, ","), outPath, e.Filename)
+		}
 
 		if err := os.WriteFile(outFile, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("не удалось записать %s: %w", outFile, err)

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"encoding/csv"
 )
 
 // CleanSQLDir удаляет в папке dir все файлы, оканчивающиеся на "_CSV.sql".
@@ -49,44 +51,46 @@ func ListCSVFiles(dir string) ([]string, error) {
 	return out, nil
 }
 
-// ReadHeader читает первую строку CSV-файла и возвращает её как строку
-// колонок, склеенных через запятую. Наивный сплит — без поддержки quoted-полей.
-func ReadHeader(path string) (string, error) {
+// ReadHeader читает первую строку CSV-файла и возвращает список колонок,
+// разбитых по запятой с поддержкой кавычек и пробелов вокруг имён.
+// Пример: '"id","h1","title"' → []string{"id", "h1", "title"}
+func ReadHeader(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	// увеличим буфер на случай длинных заголовков
 	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return "", err
+			return nil, err
 		}
-		return "", fmt.Errorf("файл пустой: %s", path)
+		return nil, fmt.Errorf("файл пустый: %s", path)
 	}
-	header := scanner.Text()
-	parts := strings.Split(header, ",")
+
+	line := scanner.Text()
+
+	// Используем standard library encoding/csv для корректного парсинга
+	hReader := csv.NewReader(strings.NewReader(line))
+	rows, err := hReader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("файл пустый: %s", path)
+	}
+
+	parts := rows[0]
 	for i, p := range parts {
 		parts[i] = strings.TrimSpace(p)
 	}
-	return strings.Join(parts, ","), nil
+	return parts, nil
 }
 
 // ReadDataRows читает все строки данных CSV (без заголовка) и возвращает
-// их в виде слайса слайсов значений колонок. Пустые строки пропускаются.
-// Наивный сплит по ',' — без поддержки quoted-полей и переносов внутри
-// ячеек (контракт проекта: заголовки и данные CSV «чистые»).
-//
-// expectedCols — ожидаемое количество колонок в каждой строке данных
-// (берётся из заголовка). Если в какой-то строке число значений
-// отличается от expectedCols — возвращается ошибка с указанием имени
-// файла, номера строки и фактического/ожидаемого количества колонок.
-// Это защита от генерации битого SQL в режиме --copy: «INSERT has more
-// target columns than expressions» / «INSERT has more expressions than
-// target columns».
+// их в виде слайсов значений колонок. Пустые строки пропускаются.
 func ReadDataRows(path string, expectedCols int) ([][]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -95,31 +99,55 @@ func ReadDataRows(path string, expectedCols int) ([][]string, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	// увеличим буфер на случай длинных строк данных
 	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 
+	// Считываем заголовок
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("файл пустый: %s", path)
+	}
+
+	// Парсим заголовок для определения количества колонок
+	hReader := csv.NewReader(strings.NewReader(scanner.Text()))
+	hRows, err := hReader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	actualCols := len(hRows[0])
+
+	if actualCols == 0 {
+		actualCols = expectedCols
+	}
+
 	var rows [][]string
-	lineNo := 0 // 1-based номер строки в файле (включая заголовок)
-	first := true
+	lineNo := 1
 	for scanner.Scan() {
 		lineNo++
 		line := scanner.Text()
-		if first {
-			// пропускаем заголовок
-			first = false
-			continue
-		}
 		if line == "" {
 			continue
 		}
-		parts := strings.Split(line, ",")
-		for i, p := range parts {
-			parts[i] = strings.TrimSpace(p)
+		rowsReader := csv.NewReader(strings.NewReader(line))
+		row, err := rowsReader.ReadAll()
+		if err != nil {
+			return nil, fmt.Errorf("файл %s: строка %d: %w", path, lineNo, err)
 		}
-		if len(parts) != expectedCols {
-			return nil, fmt.Errorf("файл %s: строка %d содержит %d колонок, ожидалось %d (по заголовку)", path, lineNo, len(parts), expectedCols)
+		if len(row) == 0 {
+			continue
 		}
-		rows = append(rows, parts)
+		for i, c := range row[0] {
+			// Убираем кавычки и пробелы
+			if strings.HasPrefix(c, "'") && strings.HasSuffix(c, "'") {
+				row[0][i] = strings.Trim(c, "'")
+			}
+			row[0][i] = strings.TrimSpace(row[0][i])
+		}
+		if len(row[0]) != actualCols {
+			return nil, fmt.Errorf("файл %s: строка %d содержит %d колонок, ожидалось %d", path, lineNo, len(row[0]), actualCols)
+		}
+		rows = append(rows, row[0])
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
