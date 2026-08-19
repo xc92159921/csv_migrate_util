@@ -15,26 +15,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var tempTable bool
-var upsert bool
-var copyInline bool
-
-// rootCmd — единственная команда утилиты. Вся логика собрана здесь,
-// потому что операция одна — сгенерировать SQL-файлы из CSV.
+// rootCmd — единственная команда утилиты. Утилита делает ровно одно:
+// генерирует SQL-файлы из CSV в режиме --copy (INSERT ... ON CONFLICT (id)
+// DO UPDATE, данные CSV встраиваются прямо в SQL как литералы VALUES).
 var rootCmd = &cobra.Command{
 	Use:   "csv_migrate_util",
-	Short: "Генерация SQL-миграций из CSV-файлов",
-	Long:  "Утилита для генерации PostgreSQL-SQL из CSV-файлов формата <N>.<TABLE_NAME>.csv.",
+	Short: "Генерация SQL-миграций из CSV-файлов (режим --copy)",
+	Long:  "Утилита для генерации PostgreSQL-SQL из CSV-файлов формата <N>.<TABLE_NAME>.csv.\nРежим работы один — --copy: INSERT ... ON CONFLICT (id) DO UPDATE, данные CSV\nвстраиваются в SQL как литералы VALUES.",
 	RunE:  run,
-}
-
-func init() {
-	rootCmd.Flags().BoolVarP(&tempTable, "temp-table", "t", false,
-		"Сгенерировать SQL в режиме temp_table (импорт через временную таблицу + UPSERT по PK/UNIQUE)")
-	rootCmd.Flags().BoolVarP(&upsert, "upsert", "u", false,
-		"Сгенерировать SQL в режиме upsert (импорт через временную таблицу + UPSERT по колонке id)")
-	rootCmd.Flags().BoolVarP(&copyInline, "copy", "c", false,
-		"Сгенерировать SQL в режиме copy (без COPY: данные CSV встраиваются в SQL как INSERT ... ON CONFLICT (id) DO UPDATE)")
 }
 
 // Execute — точка входа, вызывается из main.
@@ -45,20 +33,6 @@ func Execute() {
 }
 
 func run(cmd *cobra.Command, args []string) error {
-	modes := 0
-	if tempTable {
-		modes++
-	}
-	if upsert {
-		modes++
-	}
-	if copyInline {
-		modes++
-	}
-	if modes > 1 {
-		return fmt.Errorf("флаги --temp-table, --upsert и --copy взаимно исключающие, укажите только один из них")
-	}
-
 	cfg, err := config.LoadOrCreate(configFileName())
 	if err != nil {
 		return fmt.Errorf("ошибка загрузки конфигурации: %w", err)
@@ -75,7 +49,7 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("не удалось создать папку sql (%s): %w", cfg.SQL, err)
 	}
 
-	// Шаг 1. Очистка папки sql — общая для обоих режимов.
+	// Шаг 1. Очистка папки sql.
 	if err := iofs.CleanSQLDir(cfg.SQL); err != nil {
 		return fmt.Errorf("ошибка очистки папки sql: %w", err)
 	}
@@ -98,7 +72,7 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-		// Шаг 3. Запись .sql-файлов.
+	// Шаг 3. Запись .sql-файлов в режиме --copy.
 	ts := time.Now().Format("20060102150405")
 	for _, e := range entries {
 		table := strings.ToLower(e.Base)
@@ -110,36 +84,27 @@ func run(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("не удалось прочитать заголовок %s: %w", e.Filename, err)
 		}
 
-		outPath := iofs.BuildCopyPath(cfg.Target, e.Filename)
+		// Режим --copy: колонка id обязательна — это ключ UPSERT.
+		hasID := false
+		for _, c := range columns {
+			if strings.TrimSpace(c) == "id" {
+				hasID = true
+				break
+			}
+		}
+		if !hasID {
+			return fmt.Errorf("файл %s: режим --copy требует колонку `id` в заголовке CSV", e.Filename)
+		}
+
+		rows, err := iofs.ReadDataRows(filepath.Join(cfg.CSV, e.Filename), len(columns))
+		if err != nil {
+			return fmt.Errorf("не удалось прочитать данные %s: %w", e.Filename, err)
+		}
+
+		content := render.CopyInlineSQL(table, strings.Join(columns, ","), rows)
+
 		outName := fmt.Sprintf("%s%s_%s_CSV.sql", ts, e.Index, basenameUpper)
 		outFile := filepath.Join(cfg.SQL, outName)
-
-		var content string
-		switch {
-		case copyInline:
-			// В режиме --copy колонка id обязательна — это ключ UPSERT.
-			hasID := false
-			for _, c := range columns {
-				if strings.TrimSpace(c) == "id" {
-					hasID = true
-					break
-				}
-			}
-			if !hasID {
-				return fmt.Errorf("файл %s: режим --copy требует колонку `id` в заголовке CSV", e.Filename)
-			}
-			rows, err := iofs.ReadDataRows(filepath.Join(cfg.CSV, e.Filename), len(columns))
-			if err != nil {
-				return fmt.Errorf("не удалось прочитать данные %s: %w", e.Filename, err)
-			}
-			content = render.CopyInlineSQL(table, strings.Join(columns, ","), rows)
-		case upsert:
-			content = render.UpsertSQL(table, strings.Join(columns, ","), outPath)
-		case tempTable:
-			content = render.TempTableSQL(table, strings.Join(columns, ","), outPath, e.Filename)
-		default:
-			content = render.NormalSQL(table, strings.Join(columns, ","), outPath, e.Filename)
-		}
 
 		if err := os.WriteFile(outFile, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("не удалось записать %s: %w", outFile, err)

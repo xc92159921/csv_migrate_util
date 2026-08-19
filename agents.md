@@ -2,17 +2,17 @@
 
 ## Назначение
 
-Утилита на Go для генерации SQL-миграций из CSV-файлов. Устанавливается
-через `go install github.com/xc92159921/csv_migrate_util@latest` и запускается
+Утилита на Go для генерации SQL-миграций из CSV-файлов в **единственном
+режиме `--copy`**: данные CSV встраиваются прямо в SQL в виде
+`INSERT ... VALUES (...), (...) ... ON CONFLICT (id) DO UPDATE SET ...`.
+
+Устанавливается через
+`go install github.com/xc92159921/csv_migrate_util@latest` и запускается
 из корня проекта, где лежит `csv_migrate_config.json`.
 
 Использует [spf13/cobra](https://github.com/spf13/cobra) для CLI
-(один root-команда + флаги) и [CloudyKit/jet](https://github.com/CloudyKit/jet)
-для рендера SQL-шаблонов из `templates/`. Шаблоны встраиваются в
-бинарь через `embed.FS` (`//go:embed templates/*.jet` + `jet.SetFS`),
-при этом папка `templates/` лежит в репозитории — для удобства
-редактирования и отладки (правки в `templates/` сразу попадают
-в бинарь при следующей сборке).
+(один root-команда, без флагов режима) и собственную логику рендера
+SQL в `internal/render`.
 
 ## Структура проекта
 
@@ -20,71 +20,32 @@
 .
 ├── agents.md                # этот файл
 ├── README.md
-├── go.mod                   # module app, go 1.26.4
+├── go.mod                   # module csv_migrate_util
 ├── go.sum
-├── main.go                  # точка входа, инициализация cobra
-├── cmd/                     # команды cobra (root, generate, ...)
-├── internal/                # логика (config, csv, sql, render)
-├── templates/               # SQL-шаблоны для Jet (встраиваются в бинарь)
-│   ├── copy.sql.jet         # обычный режим (Шаг 3a)
-│   └── temp_table.sql.jet   # режим --temp-table (Шаг 3b)
+├── main.go                  # точка входа, вызов cmd.Execute
+├── cmd/                     # команды cobra (root)
+├── internal/                # логика (config, csvscan, iofs, render)
 ├── csv_migrate_config.json  # создаётся автоматически при первом запуске
 ├── csv_source/              # источник CSV (по умолчанию)
 └── sql_target/              # куда класть сгенерированные .sql (по умолчанию)
 ```
 
-(Структура `cmd/` и `internal/` — рекомендуемая для cobra-проекта,
-конкретная разбивка по файлам — на усмотрение реализации.)
-
-### Встраивание шаблонов
-
-Шаблоны из `templates/` попадают в бинарь через стандартный механизм
-`embed` Go. Ожидаемый паттерн (детали реализации — на усмотрение):
-
-```go
-//go:embed templates/*.jet
-var templatesFS embed.FS
-
-func init() {
-    jet.SetFS(templatesFS) // глобальный FS для Jet
-}
-```
-
-При таком подходе:
-
-- папка `templates/` нужна в репозитории только для удобства
-  редактирования — в runtime она читается из бинаря;
-- правки в `templates/` сразу попадают в бинарь при следующей сборке
-  (`go build` / `go install`);
-- при запуске утилите **не нужна** папка `templates/` рядом —
-  всё тянется из встроенного FS.
+Jet-шаблоны и `embed.FS` не используются — SQL рендерится напрямую
+строковым шаблоном в `render.CopyInlineSQL`.
 
 ## CLI
 
-Одна корневая команда `csv_migrate_util` (cobra) с флагами:
-
-| Флаг           | Сокращение | По умолчанию | Описание                                            |
-| -------------- | ---------- | ------------ | --------------------------------------------------- |
-| `--temp-table` | `-t`       | `false`      | Сгенерировать SQL в режиме `temp_table` (см. ниже). |
-| `--upsert`     | `-u`       | `false`      | Сгенерировать SQL в режиме `upsert` (см. ниже).     |
-
-Флаги `--temp-table` и `--upsert` **взаимоисключающие**: при указании
-обоих утилита завершается с ошибкой и ненулевым кодом.
-
-Примеры:
+Одна корневая команда `csv_migrate_util` (cobra) **без флагов режима**.
+Единственный доступный флаг — стандартный `--help` (cobra).
 
 ```bash
-# обычный режим — прямая COPY в целевую таблицу
+# единственный режим — --copy: INSERT ... VALUES ... ON CONFLICT (id) DO UPDATE
 csv_migrate_util
-
-# режим temp_table — импорт через временную таблицу + UPSERT по PK/UNIQUE целевой таблицы
-csv_migrate_util --temp-table
-csv_migrate_util -t
-
-# режим upsert — импорт через временную таблицу + UPSERT по колонке id (id должен быть в CSV и в целевой таблице)
-csv_migrate_util --upsert
-csv_migrate_util -u
 ```
+
+Требование к CSV: в заголовке должна быть колонка `id` (используется
+как ключ UPSERT). Если колонки `id` нет — утилита завершается с ошибкой
+и ненулевым кодом, указывая имя файла.
 
 ## Конфигурация `csv_migrate_config.json`
 
@@ -94,7 +55,7 @@ csv_migrate_util -u
 | -------- | ------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `csv`    | string | да          | Папка с исходными `.csv` (относительный путь)                                                                                                  |
 | `sql`    | string | да          | Папка для сгенерированных `.sql` (относительный)                                                                                               |
-| `target` | string | нет         | Префикс пути в `COPY ... FROM` (например, `/data` для Docker-монтирования). Может быть пустым — тогда путь в `COPY` будет просто именем файла. |
+| `target` | string | нет         | Префикс пути, который исторически подставлялся в `COPY ... FROM`. В режиме `--copy` **не используется**, но поле сохранено для совместимости со старыми конфигами. Может быть пустым. |
 
 Дефолтный конфиг (создаётся утилитой при первом запуске):
 
@@ -127,9 +88,6 @@ csv_migrate_util -u
 
 Удалить в папке `sql` все файлы, оканчивающиеся на `_CSV.sql`
 (только этот паттерн — никакой другой контент не трогаем).
-Очистка **общая для обоих режимов** (и обычного, и `temp_table`),
-поэтому запуск в любом режиме сносит ранее сгенерированные файлы
-любого режима.
 
 ### Шаг 2. Сканирование папки `csv`
 
@@ -160,17 +118,10 @@ csv_migrate_util -u
 
 - `table` = часть имени файла после `<N>.` и до `.csv`, в **lowercase**.
   Пример: `1.Blogs.csv` → `blogs`.
-- `columns` = первая строка CSV как есть (простой `strings.Split(line, ",")`,
-  без поддержки quoted-полей с запятыми внутри — предполагается, что
-  заголовки CSV чистые и точно соответствуют именам колонок в таблице).
-  Колонки склеиваются через запятую.
-- `path` = `target` + (если `target` непустой, добавить `/`) + `<filename>`.
-  Нормализация слэша: между `target` и именем файла всегда ровно один `/`,
-  независимо от того, есть ли слэш на конце `target`.
-  Примеры:
-  - `target = "/data"`, файл `1.blogs.csv` → `/data/1.blogs.csv`
-  - `target = "/data/"`, файл `1.blogs.csv` → `/data/1.blogs.csv`
-  - `target = ""`, файл `1.blogs.csv` → `1.blogs.csv`
+- `columns` = первая строка CSV; чтение с поддержкой кавычек
+  (если в заголовке есть запятые внутри quoted-полей — они учитываются).
+- `rows` = все строки данных CSV (без заголовка), в том же порядке колонок.
+  Пустая ячейка трактуется как SQL `NULL`.
 - `ts` = текущее локальное время в формате `YYYYMMDDHHMMSS`.
   Пример: `20260716130027`.
 - `index` = `<N>` из имени входного файла, как есть (без ведущих нулей).
@@ -184,412 +135,91 @@ csv_migrate_util -u
 
 ### Шаг 3. Запись `.sql`-файла
 
-Содержимое файла зависит от режима (флаг `--temp-table`).
-Шаблоны лежат в `templates/` (см. секцию «Структура проекта»):
+Для каждого валидного CSV утилита дополнительно проверяет, что в
+заголовке есть колонка `id` (без учёта регистра по пробелам вокруг имени,
+но с учётом регистра имени колонки — `id` строчными). Если колонки `id`
+нет — утилита возвращает ошибку и завершается.
 
-- `templates/copy.sql.jet` — обычный режим;
-- `templates/temp_table.sql.jet` — режим `--temp-table`.
-
-#### Шаг 3a. Обычный режим (без `--temp-table`)
-
-Файл `templates/copy.sql.jet` рендерится с переменными
-`{{table}}`, `{{columns}}`, `{{path}}`, `{{filename}}`
-и даёт на выходе:
+Содержимое файла генерируется функцией
+`render.CopyInlineSQL(table, columns, rows)` и имеет следующий вид:
 
 ```sql
-DO $$
-BEGIN
-
-    BEGIN
-        COPY <table> (<columns>)
-        FROM '<path>'
-        DELIMITER ',' CSV HEADER;
-    EXCEPTION
-        WHEN undefined_file THEN
-            RAISE NOTICE 'Файл <filename> не найден, пропускаем импорт данных.';
-    END;
-
-
-END $$;
+-- Сгенерировано csv_migrate_util --copy для таблицы <table>
+INSERT INTO <table> (<columns>) VALUES
+    ('<v1>', '<v2>', ...),
+    ('<v1>', '<v2>', ...),
+    ...
+ON CONFLICT (id) DO UPDATE SET
+    <col1> = EXCLUDED.<col1>,
+    <col2> = EXCLUDED.<col2>,
+    ...;
 ```
 
-Где:
+Правила:
 
 - `<table>` — вычисленное имя таблицы (lowercase basename);
 - `<columns>` — склеенный через запятую список колонок из заголовка CSV;
-- `<path>` — вычисленный путь к CSV (с учётом `target`);
-- `<filename>` — оригинальное имя CSV-файла (для сообщения в NOTICE).
+- Каждая строка CSV становится одной строкой `VALUES` с литералами в
+  одинарных кавычках.
+- Одинарная кавычка внутри значения удваивается (`'` → `''`).
+- Пустая ячейка → SQL `NULL` (без кавычек).
+- В `SET`-часть попадают **все** колонки, кроме `id`. Если в CSV
+  есть только `id` (или `SET`-часть пуста по любой причине) — финальный
+  SQL вырождается в `ON CONFLICT (id) DO NOTHING`.
+- Типы колонок в SQL не кастуются — PostgreSQL сам приведёт TEXT-литерал
+  к целевому типу колонки.
 
-#### Шаг 3b. Режим `temp_table` (с `--temp-table`)
+## Эталонный пример
 
-Импорт идёт через временную таблицу `temp_csv_import` (создаётся с
-колонками типа `TEXT`), затем строится `INSERT ... ON CONFLICT`
-по `PRIMARY KEY` (приоритет) или `UNIQUE`-индексу целевой таблицы,
-либо простой `INSERT` если уникальных ключей нет.
+Вход: `csv_source/10.users.csv`:
 
-Файл `templates/temp_table.sql.jet` рендерится с переменными
-`{{table}}`, `{{columns}}`, `{{path}}` (`filename` не используется —
-в NOTICE подставляется `csv_path`) и даёт на выходе:
+```
+id,email,name
+1,alice@example.com,Alice
+2,bob@example.com,Bob
+3,carol@example.com,Carol
+```
+
+Команда: `csv_migrate_util`
+
+Выход: `sql_target/<ts>10_USERS_CSV.sql`:
 
 ```sql
-DO $$
-DECLARE
-    -- === ЭТИ ТРИ ПЕРЕМЕННЫЕ ПОДСТАВЛЯЕТ ГЕНЕРАТОР ===
-    target_tbl  TEXT := '<table>';                       -- Имя таблицы
-    columns_lst TEXT := '<columns>';                     -- Колонки из CSV через запятую
-    csv_path    TEXT := '<path>';                        -- Путь к CSV-файлу
-    -- =================================================
-
-    temp_tbl_fields TEXT;
-    conflict_cols   TEXT;
-    update_set      TEXT;
-    final_sql       TEXT;
-BEGIN
-    -- 1. Превращаем список 'col1,col2' в определение для таблицы: 'col1 TEXT, col2 TEXT'
-    SELECT string_agg(format('%I TEXT', trim(col)), ', ')
-    INTO temp_tbl_fields
-    FROM unnest(string_to_array(columns_lst, ',')) AS col;
-
-    -- 2. Создаем временную таблицу, где все типы TEXT
-    EXECUTE format('CREATE TEMP TABLE temp_csv_import (%s) ON COMMIT DROP', temp_tbl_fields);
-
-    -- 3. Безопасно импортируем CSV-данные во временную таблицу
-    BEGIN
-        EXECUTE format('
-            COPY temp_csv_import (%s)
-            FROM %L
-            DELIMITER '','' CSV HEADER',
-            columns_lst, csv_path
-        );
-    EXCEPTION
-        WHEN undefined_file THEN
-            RAISE NOTICE 'Файл % не найден, пропускаем импорт.', csv_path;
-            RETURN;
-    END;
-
-    -- 4. Ищем уникальный ключ таблицы (PRIMARY KEY в приоритете, иначе UNIQUE)
-    SELECT string_agg(format('%I', att.attname), ', ')
-    INTO conflict_cols
-    FROM pg_index i
-    JOIN pg_attribute att ON att.attrelid = i.indrelid AND att.attnum = ANY(i.indkey)
-    WHERE i.indrelid = target_tbl::regclass
-      AND i.indisunique
-    GROUP BY i.indexrelid, i.indisprimary
-    ORDER BY i.indisprimary DESC
-    LIMIT 1;
-
-    -- 5. Если уникальный ключ найден — строим UPSERT
-    IF conflict_cols IS NOT NULL AND conflict_cols != '' THEN
-        SELECT string_agg(format('%1$I = EXCLUDED.%1$I', trim(col)), ', ')
-        INTO update_set
-        FROM unnest(string_to_array(columns_lst, ',')) AS col
-        WHERE trim(col) NOT IN (
-            SELECT trim(c) FROM unnest(string_to_array(conflict_cols, ',')) c
-        );
-
-        IF update_set IS NULL OR update_set = '' THEN
-            final_sql := format('
-                INSERT INTO %1$I (%2$s)
-                SELECT %2$s FROM temp_csv_import
-                ON CONFLICT (%3$s) DO NOTHING',
-                target_tbl, columns_lst, conflict_cols
-            );
-        ELSE
-            final_sql := format('
-                INSERT INTO %1$I (%2$s)
-                SELECT %2$s FROM temp_csv_import
-                ON CONFLICT (%3$s)
-                DO UPDATE SET %4$s',
-                target_tbl, columns_lst, conflict_cols, update_set
-            );
-        END IF;
-    ELSE
-        -- 6. Если у таблицы вообще нет уникальных ключей — просто дописываем
-        final_sql := format('
-            INSERT INTO %1$I (%2$s)
-            SELECT %2$s FROM temp_csv_import',
-            target_tbl, columns_lst
-        );
-    END IF;
-
-    -- 7. Выполняем один итоговый запрос
-    EXECUTE final_sql;
-
-    RAISE NOTICE 'Импорт в таблицу % успешно выполнен (UPSERT).', target_tbl;
-END $$;
-```
-
-**Поведение EXCEPTION в `temp_table`-режиме:** ловится `undefined_file`
-на шаге 3 (импорт CSV). При срабатывании — `RAISE NOTICE` + `RETURN`
-(выход из `DO`-блока), UPSERT не выполняется. Это отличается от
-обычного режима, где EXCEPTION оборачивает весь `COPY`.
-
-#### Шаг 3c. Режим `upsert` (с `--upsert`)
-
-Импорт идёт через временную таблицу `temp_csv_import` (создаётся с
-колонками типа `TEXT`), затем строится `INSERT ... ON CONFLICT (id)
-DO UPDATE` — жёстко по колонке `id`. По условиям эксплуатации
-колонка `id` всегда присутствует в CSV и всегда уникальна в
-целевой таблице (проверки этого на уровне утилиты нет — это
-ответственность пользователя, как и наличие колонки `id` в самой
-целевой таблице в БД).
-
-Содержимое генерируется функцией `render.UpsertSQL(table, columns, copyPath)`
-и имеет следующий вид:
-
-```sql
-DO $$
-DECLARE
-    -- === ЭТИ ТРИ ПЕРЕМЕННЫЕ ПОДСТАВЛЯЕТ ГЕНЕРАТОР ===
-    target_tbl  TEXT := '<table>';                       -- Имя таблицы
-    columns_lst TEXT := '<columns>';                     -- Колонки из CSV через запятую
-    csv_path    TEXT := '<path>';                        -- Путь к CSV-файлу
-    -- =================================================
-
-    conflict_cols   CONSTANT TEXT := 'id';
-    update_set      TEXT;
-    final_sql       TEXT;
-BEGIN
-    -- 1. Создаем временную таблицу, где все типы TEXT
-    EXECUTE format('CREATE TEMP TABLE temp_csv_import (%s) ON COMMIT DROP',
-        (SELECT string_agg(format('%I TEXT', trim(col)), ', ')
-         FROM unnest(string_to_array(columns_lst, ',')) AS col));
-
-    -- 2. Безопасно импортируем CSV-данные во временную таблицу
-    BEGIN
-        EXECUTE format('
-            COPY temp_csv_import (%s)
-            FROM %L
-            DELIMITER '','' CSV HEADER',
-            columns_lst, csv_path
-        );
-    EXCEPTION
-        WHEN undefined_file THEN
-            RAISE NOTICE 'Файл % не найден, пропускаем импорт.', csv_path;
-            RETURN;
-    END;
-
-    -- 3. Строим SET-часть: обновляем все колонки кроме id
-    SELECT string_agg(format('%1$I = EXCLUDED.%1$I', trim(col)), ', ')
-    INTO update_set
-    FROM unnest(string_to_array(columns_lst, ',')) AS col
-    WHERE trim(col) <> conflict_cols;
-
-    IF update_set IS NULL OR update_set = '' THEN
-        -- Если в CSV только колонка id — ничего обновлять нечего, просто пропускаем дубли
-        final_sql := format('
-            INSERT INTO %1$I (%2$s)
-            SELECT %2$s FROM temp_csv_import
-            ON CONFLICT (%3$s) DO NOTHING',
-            target_tbl, columns_lst, conflict_cols
-        );
-    ELSE
-        final_sql := format('
-            INSERT INTO %1$I (%2$s)
-            SELECT %2$s FROM temp_csv_import
-            ON CONFLICT (%3$s)
-            DO UPDATE SET %4$s',
-            target_tbl, columns_lst, conflict_cols, update_set
-        );
-    END IF;
-
-    EXECUTE final_sql;
-
-    RAISE NOTICE 'Импорт в таблицу % успешно выполнен (UPSERT по id).', target_tbl;
-END $$;
-```
-
-**Особенности режима `upsert`:**
-
-- `conflict_cols` **жёстко зафиксирован** как строка `'id'` — никаких
-  обращений к `pg_index` / `pg_attribute` не происходит, ключ для
-  `ON CONFLICT` известен заранее из требования задачи.
-- `update_set` строится динамически по списку колонок CSV: обновляются
-  все колонки, кроме `id` (через `WHERE trim(col) <> conflict_cols`).
-- Если в CSV **только** колонка `id` — `update_set` пустой, и финальный
-  SQL вырождается в `INSERT ... ON CONFLICT (id) DO NOTHING` (дубли
-  молча пропускаются).
-- Поведение `EXCEPTION WHEN undefined_file` на шаге 2 аналогично
-  `temp_table`-режиму: `RAISE NOTICE` + `RETURN` из DO-блока, UPSERT
-  не выполняется.
-- Как и `temp_table`-режим, рассчитан на PostgreSQL (использует
-  `TEMP TABLE`, `ON CONFLICT`, `EXCEPTION WHEN undefined_file`).
-
-### Эталонный пример (режим `upsert`)
-
-Вход: `csv_source/7.promocodes.csv`:
-
-```
-promocode,discount,discount_type
-SUMMER10,10,percent
-WINTER20,20,percent
-```
-
-Команда: `csv_migrate_util --upsert`
-
-Выход: `sql_target/202607282323497_PROMOCODES_CSV.sql` — содержимое
-совпадает с шаблоном выше, где `<table>='promocodes'`,
-`<columns>='promocode,discount,discount_type'`,
-`<path>='/data/7.promocodes.csv'`.
-
-## Эталонный пример (обычный режим)
-
-Вход: `csv_source/1.blogs.csv`:
-
-```
-id,title,description,preview,preview_small,show_on_main,url,article,views,user_blogs
-11111111-1111-1111-1111-111111111111,Тестовая статья,Описание статьи,/assets/blog/preview.jpg,/assets/blog/preview_small.jpg,false,test-article-1,# Тестовая статья про гранит и качество натурального камня оптом дешево,3,11111111-1111-1111-1111-111111111111
-```
-
-Выход: `sql_target/202607161300271_BLOGS_CSV.sql`:
-
-```sql
-DO $$
-BEGIN
-
-    BEGIN
-        COPY blogs (id,title,description,preview,preview_small,show_on_main,url,article,views,user_blogs)
-        FROM '/data/1.blogs.csv'
-        DELIMITER ',' CSV HEADER;
-    EXCEPTION
-        WHEN undefined_file THEN
-            RAISE NOTICE 'Файл 1.blogs.csv не найден, пропускаем импорт данных.';
-    END;
-
-
-END $$;
-```
-
-## Эталонный пример (режим `temp_table`)
-
-Вход: `csv_source/7.promocodes.csv`:
-
-```
-promocode,discount,discount_type
-SUMMER10,10,percent
-WINTER20,20,percent
-```
-
-Команда: `csv_migrate_util --temp-table`
-
-Выход: `sql_target/202607161300277_PROMOCODES_CSV.sql`:
-
-```sql
-DO $$
-DECLARE
-    -- === ЭТИ ТРИ ПЕРЕМЕННЫЕ ПОДСТАВЛЯЕТ ГЕНЕРАТОР ===
-    target_tbl  TEXT := 'promocodes';                       -- Имя таблицы
-    columns_lst TEXT := 'promocode,discount,discount_type'; -- Колонки из CSV через запятую
-    csv_path    TEXT := '/data/7.promocodes.csv';           -- Путь к CSV-файлу
-    -- ====================================================
-
-    temp_tbl_fields TEXT;
-    conflict_cols   TEXT;
-    update_set      TEXT;
-    final_sql       TEXT;
-BEGIN
-    -- 1. Превращаем список 'col1,col2' в определение для таблицы: 'col1 TEXT, col2 TEXT'
-    SELECT string_agg(format('%I TEXT', trim(col)), ', ')
-    INTO temp_tbl_fields
-    FROM unnest(string_to_array(columns_lst, ',')) AS col;
-
-    -- 2. Создаем временную таблицу, где все типы TEXT
-    EXECUTE format('CREATE TEMP TABLE temp_csv_import (%s) ON COMMIT DROP', temp_tbl_fields);
-
-    -- 3. Безопасно импортируем CSV-данные во временную таблицу
-    BEGIN
-        EXECUTE format('
-            COPY temp_csv_import (%s)
-            FROM %L
-            DELIMITER '','' CSV HEADER',
-            columns_lst, csv_path
-        );
-    EXCEPTION
-        WHEN undefined_file THEN
-            RAISE NOTICE 'Файл % не найден, пропускаем импорт.', csv_path;
-            RETURN;
-    END;
-
-    -- 4. Ищем уникальный ключ таблицы (PRIMARY KEY в приоритете, иначе UNIQUE)
-    SELECT string_agg(format('%I', att.attname), ', ')
-    INTO conflict_cols
-    FROM pg_index i
-    JOIN pg_attribute att ON att.attrelid = i.indrelid AND att.attnum = ANY(i.indkey)
-    WHERE i.indrelid = target_tbl::regclass
-      AND i.indisunique
-    GROUP BY i.indexrelid, i.indisprimary
-    ORDER BY i.indisprimary DESC
-    LIMIT 1;
-
-    -- 5. Если уникальный ключ найден — строим UPSERT
-    IF conflict_cols IS NOT NULL AND conflict_cols != '' THEN
-        SELECT string_agg(format('%1$I = EXCLUDED.%1$I', trim(col)), ', ')
-        INTO update_set
-        FROM unnest(string_to_array(columns_lst, ',')) AS col
-        WHERE trim(col) NOT IN (
-            SELECT trim(c) FROM unnest(string_to_array(conflict_cols, ',')) c
-        );
-
-        IF update_set IS NULL OR update_set = '' THEN
-            final_sql := format('
-                INSERT INTO %1$I (%2$s)
-                SELECT %2$s FROM temp_csv_import
-                ON CONFLICT (%3$s) DO NOTHING',
-                target_tbl, columns_lst, conflict_cols
-            );
-        ELSE
-            final_sql := format('
-                INSERT INTO %1$I (%2$s)
-                SELECT %2$s FROM temp_csv_import
-                ON CONFLICT (%3$s)
-                DO UPDATE SET %4$s',
-                target_tbl, columns_lst, conflict_cols, update_set
-            );
-        END IF;
-    ELSE
-        -- 6. Если у таблицы вообще нет уникальных ключей — просто дописываем
-        final_sql := format('
-            INSERT INTO %1$I (%2$s)
-            SELECT %2$s FROM temp_csv_import',
-            target_tbl, columns_lst
-        );
-    END IF;
-
-    -- 7. Выполняем один итоговый запрос
-    EXECUTE final_sql;
-
-    RAISE NOTICE 'Импорт в таблицу % успешно выполнен (UPSERT).', target_tbl;
-END $$;
+-- Сгенерировано csv_migrate_util --copy для таблицы users
+INSERT INTO users (id,email,name) VALUES
+    ('1', 'alice@example.com', 'Alice'),
+    ('2', 'bob@example.com', 'Bob'),
+    ('3', 'carol@example.com', 'Carol')
+ON CONFLICT (id) DO UPDATE SET
+    email = EXCLUDED.email,
+    name  = EXCLUDED.name;
 ```
 
 ## Зависимости (go.mod)
 
-- `github.com/spf13/cobra` — CLI.
-- `github.com/cloudykit/jet/v6` — рендер SQL-шаблонов.
+- `github.com/spf13/cobra` — CLI (только `root`-команда).
 
-Стандартные пакеты Go, без сторонних обёрток: `embed` (встраивание
-`templates/` в бинарь), `encoding/json` (конфиг), `os`/`path/filepath`
-(обход папок, очистка), `strings` (парсинг заголовка CSV),
-`strconv` (парсинг `<N>`), `time` (timestamp в имени файла).
+Стандартные пакеты Go, без сторонних обёрток: `encoding/json` (конфиг),
+`os`/`path/filepath` (обход папок, очистка, запись файлов),
+`strings` (парсинг заголовка и строк CSV), `strconv` (парсинг `<N>`),
+`time` (timestamp в имени файла).
 
 ## Ограничения и допущения
 
-- CSV-парсинг — наивный: одна строка заголовка, разделитель `,`,
-  без поддержки quoted-полей и переносов строк внутри ячеек.
-  Заголовок должен точно соответствовать именам колонок в целевой таблице.
+- CSV-парсинг — с поддержкой quoted-полей и запятых внутри кавычек
+  (для заголовка и данных). Переносы строк внутри ячеек не поддерживаются.
 - Рекурсивного обхода `csv`-папки нет — все файлы лежат в одном уровне.
 - Входной CSV-файл должен иметь имя `<N>.<TABLE_NAME>.csv`, где `<N>` —
   положительное целое число без ведущих нулей. Имя без числового
   префикса или с дублирующимся `<N>` — **ошибка** (exit ≠ 0).
+- В заголовке CSV обязательна колонка `id` (она используется как ключ
+  `ON CONFLICT`). Без неё — **ошибка** (exit ≠ 0).
 - Суффикс `_CSV` в имени выходного файла — фиксированный,
   чтобы шаг очистки мог точно находить ранее сгенерированные файлы.
-- Имя sql-файла **одинаковое в обоих режимах**; отличается только
-  содержимое. Шаг очистки `*_CSV.sql` затрагивает файлы обоих режимов.
-- `target` используется только как префикс в `COPY ... FROM`,
-  на диске эта папка не проверяется и не создаётся —
-  предполагается, что она уже смонтирована в целевом окружении
-  (например, в Docker-контейнере СУБД).
+- Поле `target` в конфиге сохранено для совместимости со старыми
+  конфигами, но **в режиме `--copy` не используется** (нет `COPY ... FROM`,
+  данные уже внутри SQL).
 - Время в имени файла — локальное (`time.Now().Format("20060102150405")`).
-- Режим `temp_table` рассчитан на PostgreSQL: использует `pg_index`,
-  `pg_attribute`, типы `TEXT`, `ON CONFLICT ... DO UPDATE/UPSERT`,
-  `EXCEPTION WHEN undefined_file`. На других СУБД работать не будет.
+- Режим рассчитан на PostgreSQL: использует синтаксис
+  `INSERT ... ON CONFLICT (id) DO UPDATE SET ...`. На других СУБД
+  работать не будет.
