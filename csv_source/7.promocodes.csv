@@ -1,4 +1,4 @@
-promocode,discount,discount_type
-SUMMER10,10,percent
-WINTER20,20,percent
-SPRING15,15,percent
+promocode,discount,discount_type,init_only
+SUMMER10,10,percent,1
+WINTER20,20,percent,1
+SPRING15,15,percent,1

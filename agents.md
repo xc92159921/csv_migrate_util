@@ -169,15 +169,41 @@ ON CONFLICT (id) DO UPDATE SET
 - Типы колонок в SQL не кастуются — PostgreSQL сам приведёт TEXT-литерал
   к целевому типу колонки.
 
+### Опциональная колонка `init_only`
+
+В CSV может быть **опциональная** служебная колонка `init_only`
+(значения `0` или `1`). Назначение — защитить от затирания менеджерских
+правок при повторном применении миграции (стартовые цены, расписания
+и т.п.).
+
+Правила:
+
+- `init_only = "1"` → строка попадает в батч
+  `ON CONFLICT (id) DO NOTHING`. Если строка с таким `id` уже есть
+  в таблице — менеджерская правка сохраняется; если нет — строка
+  вставляется.
+- `init_only = "0"` или пусто, либо колонки `init_only` нет в CSV →
+  строка попадает в обычный UPSERT-батч
+  `ON CONFLICT (id) DO UPDATE SET ...`.
+- Любое другое значение (опечатка, мусор) трактуется как `0`
+  (обычная строка с полным UPSERT).
+- Колонка `init_only` **никогда** не попадает в список колонок
+  INSERT/SET — её не нужно создавать в целевой таблице БД.
+
+Когда в CSV есть и `init_only=1`, и `init_only=0`, генерируются **два
+отдельных INSERT-батча в одном `.sql`-файле** (init_only-батч идёт
+первым). Если все строки одного типа — пишется только соответствующий
+батч.
+
 ## Эталонный пример
 
 Вход: `csv_source/10.users.csv`:
 
 ```
-id,email,name
-1,alice@example.com,Alice
-2,bob@example.com,Bob
-3,carol@example.com,Carol
+id,email,name,init_only
+1,alice@example.com,Alice,0
+2,bob@example.com,Bob,1
+3,carol@example.com,Carol,1
 ```
 
 Команда: `csv_migrate_util`
@@ -185,11 +211,15 @@ id,email,name
 Выход: `sql_target/<ts>10_USERS_CSV.sql`:
 
 ```sql
+-- Сгенерировано csv_migrate_util --copy для таблицы users (init_only: ON CONFLICT (id) DO NOTHING)
+INSERT INTO users (email,name) VALUES
+    ('bob@example.com', 'Bob'),
+    ('carol@example.com', 'Carol')
+ON CONFLICT (id) DO NOTHING;
+
 -- Сгенерировано csv_migrate_util --copy для таблицы users
-INSERT INTO users (id,email,name) VALUES
-    ('1', 'alice@example.com', 'Alice'),
-    ('2', 'bob@example.com', 'Bob'),
-    ('3', 'carol@example.com', 'Carol')
+INSERT INTO users (email,name) VALUES
+    ('alice@example.com', 'Alice')
 ON CONFLICT (id) DO UPDATE SET
     email = EXCLUDED.email,
     name  = EXCLUDED.name;
@@ -214,6 +244,10 @@ ON CONFLICT (id) DO UPDATE SET
   префикса или с дублирующимся `<N>` — **ошибка** (exit ≠ 0).
 - В заголовке CSV обязательна колонка `id` (она используется как ключ
   `ON CONFLICT`). Без неё — **ошибка** (exit ≠ 0).
+- Опциональная колонка `init_only` (`0` или `1`) — см. секцию выше.
+  Значение `1` защищает строку от перезаписи при повторном применении
+  миграции; значение `0` или пусто — обычный UPSERT. Колонка `init_only`
+  в БД не нужна, она служебная.
 - Суффикс `_CSV` в имени выходного файла — фиксированный,
   чтобы шаг очистки мог точно находить ранее сгенерированные файлы.
 - Поле `target` в конфиге сохранено для совместимости со старыми
