@@ -8,9 +8,8 @@ import (
 
 // Config — соответствует csv_migrate_config.json.
 type Config struct {
-	CSV    string `json:"csv"`
-	SQL    string `json:"sql"`
-	Target string `json:"target"`
+	CSV string `json:"csv"`
+	SQL string `json:"sql"`
 }
 
 // LoadOrCreate пытается прочитать path. Если файла нет — создаёт дефолтный
@@ -20,7 +19,7 @@ func LoadOrCreate(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			defaultCfg := &Config{CSV: "", SQL: "", Target: ""}
+			defaultCfg := &Config{CSV: "", SQL: ""}
 			buf, _ := json.MarshalIndent(defaultCfg, "", "    ")
 			if werr := os.WriteFile(path, buf, 0o644); werr != nil {
 				return nil, werr

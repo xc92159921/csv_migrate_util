@@ -154,13 +154,3 @@ func ReadDataRows(path string, expectedCols int) ([][]string, error) {
 	}
 	return rows, nil
 }
-
-// BuildCopyPath склеивает target и filename через один '/'. Если target
-// пуст — возвращается просто filename.
-func BuildCopyPath(target, filename string) string {
-	target = strings.TrimRight(target, "/")
-	if target == "" {
-		return filename
-	}
-	return target + "/" + filename
-}

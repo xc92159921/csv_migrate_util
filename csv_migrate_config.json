@@ -1,5 +1,4 @@
 {
     "csv": "./csv_source",
-    "sql": "./sql_target",
-    "target": "/data"
+    "sql": "./sql_target"
 }

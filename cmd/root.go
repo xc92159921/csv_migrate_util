@@ -39,7 +39,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if cfg.CSV == "" || cfg.SQL == "" {
-		return fmt.Errorf("поля `csv` и `sql` обязательны (поле `target` может быть пустым)")
+		return fmt.Errorf("поля `csv` и `sql` обязательны")
 	}
 
 	if err := os.MkdirAll(cfg.CSV, 0o755); err != nil {
