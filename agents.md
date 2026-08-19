@@ -158,11 +158,14 @@ ON CONFLICT (id) DO UPDATE SET
 Правила:
 
 - `<table>` — вычисленное имя таблицы (lowercase basename);
-- `<columns>` — склеенный через запятую список колонок из заголовка CSV;
+- `<columns>` — склеенный через запятую список колонок из заголовка CSV
+  **включая `id`** (но без служебной `init_only`);
 - Каждая строка CSV становится одной строкой `VALUES` с литералами в
   одинарных кавычках.
 - Одинарная кавычка внутри значения удваивается (`'` → `''`).
 - Пустая ячейка → SQL `NULL` (без кавычек).
+- `id` есть в списке колонок INSERT и в VALUES (чтобы вставлять новые
+  строки с нужным ключом), но **не** в `SET`-части.
 - В `SET`-часть попадают **все** колонки, кроме `id`. Если в CSV
   есть только `id` (или `SET`-часть пуста по любой причине) — финальный
   SQL вырождается в `ON CONFLICT (id) DO NOTHING`.
@@ -212,14 +215,14 @@ id,email,name,init_only
 
 ```sql
 -- Сгенерировано csv_migrate_util --copy для таблицы users (init_only: ON CONFLICT (id) DO NOTHING)
-INSERT INTO users (email,name) VALUES
-    ('bob@example.com', 'Bob'),
-    ('carol@example.com', 'Carol')
+INSERT INTO users (id,email,name) VALUES
+    ('2', 'bob@example.com', 'Bob'),
+    ('3', 'carol@example.com', 'Carol')
 ON CONFLICT (id) DO NOTHING;
 
 -- Сгенерировано csv_migrate_util --copy для таблицы users
-INSERT INTO users (email,name) VALUES
-    ('alice@example.com', 'Alice')
+INSERT INTO users (id,email,name) VALUES
+    ('1', 'alice@example.com', 'Alice')
 ON CONFLICT (id) DO UPDATE SET
     email = EXCLUDED.email,
     name  = EXCLUDED.name;

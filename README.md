@@ -75,9 +75,9 @@ id,price,init_only
 В сгенерированном SQL для таких строк будет отдельный батч:
 
 ```sql
-INSERT INTO prices (price) VALUES
-    ('100'),
-    ('200')
+INSERT INTO prices (id,price) VALUES
+    ('1', '100'),
+    ('2', '200')
 ON CONFLICT (id) DO NOTHING;
 ```
 
@@ -89,8 +89,8 @@ ON CONFLICT (id) DO NOTHING;
 UPSERT-батч:
 
 ```sql
-INSERT INTO prices (price) VALUES
-    ('300')
+INSERT INTO prices (id,price) VALUES
+    ('3', '300')
 ON CONFLICT (id) DO UPDATE SET
     price = EXCLUDED.price;
 ```

@@ -58,10 +58,11 @@ func CopyInlineSQL(table, columns string, rows [][]string) string {
 		return fmt.Sprintf("-- ОШИБКА: csv_migrate_util --copy требует колонку `id` в заголовке CSV для таблицы %s\n", table)
 	}
 
-	// Все колонки, идущие в INSERT/SET (без id и без init_only).
+	// Все колонки, идущие в INSERT/VALUES (без init_only; id остаётся,
+	// чтобы вставлять новые строки с нужным ключом).
 	dataCols := make([]string, 0, len(cols))
 	for _, c := range cols {
-		if c == "id" || c == InitOnlyColumn {
+		if c == InitOnlyColumn {
 			continue
 		}
 		dataCols = append(dataCols, c)
@@ -84,9 +85,13 @@ func CopyInlineSQL(table, columns string, rows [][]string) string {
 		}
 	}
 
-	// SET-часть для обычного батча: все data-колонки (id уже исключён).
+	// SET-часть для обычного батча: все data-колонки, КРОМЕ id.
+	// id — ключ ON CONFLICT, его нельзя обновлять.
 	setParts := make([]string, 0, len(dataCols))
 	for _, c := range dataCols {
+		if c == "id" {
+			continue
+		}
 		setParts = append(setParts, fmt.Sprintf("    %s = EXCLUDED.%s", c, c))
 	}
 
