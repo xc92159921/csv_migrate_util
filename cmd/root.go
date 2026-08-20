@@ -5,14 +5,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/xc92159921/csv_migrate_util/internal/config"
 	"github.com/xc92159921/csv_migrate_util/internal/csvscan"
 	"github.com/xc92159921/csv_migrate_util/internal/iofs"
 	"github.com/xc92159921/csv_migrate_util/internal/render"
-	"github.com/spf13/cobra"
 )
 
 // rootCmd — единственная команда утилиты. Утилита делает ровно одно:
@@ -68,13 +70,23 @@ func run(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Сортируем entries по числовому значению Index
+	sort.Slice(entries, func(i, j int) bool {
+		// Конвертируем строки в числа для правильного сравнения
+		valI, _ := strconv.Atoi(entries[i].Index)
+		valJ, _ := strconv.Atoi(entries[j].Index)
+		return valI < valJ
+	})
+
 	if err := csvscan.CheckUniqueIndexes(entries); err != nil {
 		return err
 	}
 
 	// Шаг 3. Запись .sql-файлов в режиме --copy.
-	ts := time.Now().Format("20060102150405")
-	for _, e := range entries {
+	baseTime := time.Now()
+
+	for i, e := range entries {
 		table := strings.ToLower(e.Base)
 		basenameUpper := strings.ToUpper(e.Base)
 
@@ -103,7 +115,11 @@ func run(cmd *cobra.Command, args []string) error {
 
 		content := render.CopyInlineSQL(table, strings.Join(columns, ","), rows)
 
-		outName := fmt.Sprintf("%s%s_%s_CSV.sql", ts, e.Index, basenameUpper)
+		// Добавляем i секунд к базовому времени и форматируем в нужный вид
+		ts := baseTime.Add(time.Duration(i) * time.Second).Format("20060102150405")
+
+		// Убрали e.Index из названия файла
+		outName := fmt.Sprintf("%s_%s_CSV.sql", ts, basenameUpper)
 		outFile := filepath.Join(cfg.SQL, outName)
 
 		if err := os.WriteFile(outFile, []byte(content), 0o644); err != nil {
