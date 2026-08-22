@@ -23,7 +23,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "csv_migrate_util",
 	Short: "Генерация SQL-миграций из CSV-файлов (режим --copy)",
-	Long:  "Утилита для генерации PostgreSQL-SQL из CSV-файлов формата <N>.<TABLE_NAME>.csv.\nРежим работы один — --copy: INSERT ... ON CONFLICT (id) DO UPDATE, данные CSV\nвстраиваются в SQL как литералы VALUES.",
+	Long:  "Утилита для генерации PostgreSQL-SQL из CSV-файлов формата <N>.<TABLE_NAME>.csv.\nРежим работы один — --copy: INSERT ... ON CONFLICT (id) DO UPDATE, данные CSV\nвстраиваются в SQL как литералы VALUES. Столбец init_only используется для обозночения строки только для инициализации",
 	RunE:  run,
 }
 

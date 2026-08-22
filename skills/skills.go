@@ -2,5 +2,5 @@ package skills
 
 import "embed"
 
-//go:embed csv_migrate_util/**
+//go:embed skill_files/**
 var SkillFolder embed.FS
