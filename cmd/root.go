@@ -86,6 +86,9 @@ func run(cmd *cobra.Command, args []string) error {
 	// Шаг 3. Запись .sql-файлов в режиме --copy.
 	baseTime := time.Now()
 
+	// будем хранить имена таблиц для последующего выравнивания sequence
+	var tables []string
+
 	for i, e := range entries {
 		table := strings.ToLower(e.Base)
 		basenameUpper := strings.ToUpper(e.Base)
@@ -126,7 +129,46 @@ func run(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("не удалось записать %s: %w", outFile, err)
 		}
 		log.Printf("сгенерирован %s", outFile)
+
+		// Если первая строка имеет числовой id – будем выравнивать последовательность
+		if len(rows) > 0 {
+			// найдём индекс колонки id (уже проверено, что она существует)
+			idIdx := -1
+			for i, c := range columns {
+				if strings.TrimSpace(c) == "id" {
+					idIdx = i
+					break
+				}
+			}
+			if idIdx >= 0 && idIdx < len(rows[0]) {
+				firstID := rows[0][idIdx]
+				if _, err := strconv.ParseInt(firstID, 10, 64); err == nil {
+					// числовой id – будем корректировать последовательность
+					tables = append(tables, table)
+				}
+			}
+		}
 	}
+
+	// Шаг 4. Дополнительный файл, выравнивающий sequence ID для каждой таблицы.
+	if len(tables) > 0 {
+		adjustTS := baseTime.Add(time.Duration(len(entries)) * time.Second).Format("20060102150405")
+		adjustName := fmt.Sprintf("%s_adjust_ids.sql", adjustTS)
+		adjustPath := filepath.Join(cfg.SQL, adjustName)
+
+		var sb strings.Builder
+		sb.WriteString("-- Выравнивание последовательностей ID после вставки явных значений\n")
+		for _, tbl := range tables {
+			// простая команда setval для таблиц с числовым id
+			sb.WriteString(fmt.Sprintf("SELECT setval(pg_get_serial_sequence('%s','id'), (SELECT MAX(id) FROM %s));\n", tbl, tbl))
+		}
+
+		if err := os.WriteFile(adjustPath, []byte(sb.String()), 0o644); err != nil {
+			return fmt.Errorf("не удалось записать файл выравнивания %s: %w", adjustPath, err)
+		}
+		log.Printf("сгенерирован файл выравнивания ID: %s", adjustPath)
+	}
+
 	return nil
 }
 
