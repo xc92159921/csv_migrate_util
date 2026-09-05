@@ -153,7 +153,7 @@ func run(cmd *cobra.Command, args []string) error {
 	// Шаг 4. Дополнительный файл, выравнивающий sequence ID для каждой таблицы.
 	if len(tables) > 0 {
 		adjustTS := baseTime.Add(time.Duration(len(entries)) * time.Second).Format("20060102150405")
-		adjustName := fmt.Sprintf("%s_adjust_ids.sql", adjustTS)
+		adjustName := fmt.Sprintf("%s_ADJUST_IDS_CSV.sql", adjustTS)
 		adjustPath := filepath.Join(cfg.SQL, adjustName)
 
 		var sb strings.Builder
