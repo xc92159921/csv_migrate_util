@@ -20,6 +20,9 @@ import (
 // rootCmd — единственная команда утилиты. Утилита делает ровно одно:
 // генерирует SQL-файлы из CSV в режиме --copy (INSERT ... ON CONFLICT (id)
 // DO UPDATE, данные CSV встраиваются прямо в SQL как литералы VALUES).
+// rootCmd — единственная команда утилиты. Помимо генерирования SQL,
+// доступна команда `clean`, удаляющая ранее сгенерированные *.sql файлы
+// с суффиксом _CSV.sql.
 var rootCmd = &cobra.Command{
 	Use:   "csv_migrate_util",
 	Short: "Генерация SQL-миграций из CSV-файлов (режим --copy)",
